@@ -118,6 +118,7 @@ class Guider:
         skip_guidance: Optional[float]   = None,
         orth: bool = False,
         norm: bool = True,
+        moment: float = False,
     ):
         self.ind = 0
         self.skip_logic = skip_logic
@@ -125,6 +126,9 @@ class Guider:
         self.orth = orth
         self.norm = norm
 
+        self.movavg = None
+        self.moment = moment
+        
         # Will hold the last 'skip' prediction
         self.skip_pred: Optional[Tensor] = None
 
@@ -136,6 +140,18 @@ class Guider:
         self.ind = timestep_ind
         if self.skip_logic(self.ind) and not self.skip_logic(self.ind - 1):
             self.skip_pred = noise_pred.clone()
+
+        if self.moment:
+            if self.norm_movavg:
+                noise_pred = noise_pred.clone()
+                noise_pred /= noise_pred.norm()
+            if self.movavg is None:
+                self.movavg = noise_pred
+            else:
+                self.movavg *= self.moment
+                self.movavg += noise_pred 
+        else:
+            self.movavg = None
 
     @torch.no_grad()
     def guide(self, noise_pred: Tensor, edit_coef=1) -> Tensor:
@@ -152,7 +168,7 @@ class Guider:
             if g is None:
                 raise ValueError("skip_guidance must be set to a float before guiding")
             
-            guidance_addition = (noise_pred - self.skip_pred)
+            guidance_addition = (noise_pred - self.skip_pred) if self.movavg is None else (noise_pred - self.movavg)
 
             # Orthogonalize if neccesary:
             if self.orth:
@@ -585,7 +601,7 @@ def skip_guidance_call(
             if self.do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
 
-                if self.do_skip_guidance:
+                # if self.do_skip_guidance:
                     # _guide.update(
                     #     noise_pred=noise_pred_text,
                     #     timestep_ind=i,
@@ -595,25 +611,25 @@ def skip_guidance_call(
                     #     edit_coef = self.guidance_scale ** -1
                     # )
 
-                    _guide_uncond.update(
-                        noise_pred=noise_pred_uncond,
-                        timestep_ind=i,
-                    )
-                    noise_pred_uncond = _guide_uncond.guide(
-                        noise_pred=noise_pred_uncond,
-                        edit_coef = self.guidance_scale ** -1
-                    )
+                    # _guide_uncond.update(
+                    #     noise_pred=noise_pred_uncond,
+                    #     timestep_ind=i,
+                    # )
+                    # noise_pred_uncond = _guide_uncond.guide(
+                    #     noise_pred=noise_pred_uncond,
+                    #     edit_coef = self.guidance_scale ** -1
+                    # )
                 
                 noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
             
-            # if self.do_skip_guidance:
-            #     _guide.update(
-            #         noise_pred=noise_pred,
-            #         timestep_ind=i,
-            #     )
-            #     noise_pred = _guide.guide(
-            #         noise_pred=noise_pred
-            #     )
+            if self.do_skip_guidance:
+                _guide.update(
+                    noise_pred=noise_pred,
+                    timestep_ind=i,
+                )
+                noise_pred = _guide.guide(
+                    noise_pred=noise_pred
+                )
             
 
             # compute the previous noisy sample x_t -> x_t-1
